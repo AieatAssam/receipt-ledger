@@ -14,14 +14,17 @@ if (!existsSync(src)) {
 
 mkdirSync(dst, { recursive: true });
 
-const wasmFiles = readdirSync(src).filter(f => f.startsWith('ort-wasm-simd-threaded') && f.endsWith('.wasm'));
+// Copy all ort-wasm-simd-threaded* files (both .wasm and .mjs glue)
+const files = readdirSync(src).filter(f =>
+  f.startsWith('ort-wasm-simd-threaded') && (f.endsWith('.wasm') || f.endsWith('.mjs'))
+);
 
-for (const f of wasmFiles) {
+for (const f of files) {
   const srcPath = join(src, f);
   const dstPath = join(dst, f);
   cpSync(srcPath, dstPath);
-  const size = (statSync(dstPath).size / (1024 * 1024)).toFixed(1);
-  console.log(`  ${f} (${size} MB)`);
+  const size = (statSync(dstPath).size / 1024).toFixed(1);
+  console.log(`  ${f} (${size} KB)`);
 }
 
-console.log(`✅ Copied ${wasmFiles.length} ONNX Runtime WASM files to public/onnx/`);
+console.log(`✅ Copied ${files.length} ONNX Runtime files to public/onnx/`);
