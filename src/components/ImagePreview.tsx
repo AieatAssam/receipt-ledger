@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { Scan, Trash2 } from 'lucide-react';
+import { Scan, Trash2, AlertTriangle } from 'lucide-react';
 import { initOCR, ocrImage } from '../lib/ocr';
 import { parseReceipt, type ParsedReceipt } from '../lib/parser';
 import { initLLMParser, parseReceiptWithLLM, ocrResultToText, type LLMProgress } from '../lib/llm-parser';
@@ -16,6 +16,7 @@ export default function ImagePreview({ image, onResult, onCancel }: ImagePreview
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState('');
+  const [llmFailed, setLlmFailed] = useState(false);
 
   // Draw the image on canvas
   useEffect(() => {
@@ -33,6 +34,7 @@ export default function ImagePreview({ image, onResult, onCancel }: ImagePreview
   const handleExtract = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setLlmFailed(false);
 
     const settings = loadSettings();
     const useLLM = settings.parserMode === 'ai';
@@ -50,14 +52,19 @@ export default function ImagePreview({ image, onResult, onCancel }: ImagePreview
 
       if (useLLM) {
         // LLM path
-        setProgress('Loading AI model...');
-        const llmOk = await initLLMParser((p: LLMProgress) => {
+        let llmOk = false;
+        let llmErrorText: string | null = null;
+
+        await initLLMParser((p: LLMProgress) => {
           if (p.status === 'downloading') {
             setProgress(`Downloading AI model: ${Math.round(p.progress * 100)}%`);
           } else if (p.status === 'loading') {
             setProgress(`Loading AI model: ${Math.round(p.progress * 100)}%`);
           } else if (p.status === 'error') {
-            setProgress(`AI model error: ${p.text}. Falling back to heuristic...`);
+            llmErrorText = p.text;
+            setProgress('');
+          } else if (p.status === 'ready') {
+            llmOk = true;
           }
         });
 
@@ -66,8 +73,12 @@ export default function ImagePreview({ image, onResult, onCancel }: ImagePreview
           const rawText = ocrResultToText(ocrResult);
           parsed = await parseReceiptWithLLM(rawText);
         } else {
-          // Fall back to heuristic
-          setProgress('Parsing text...');
+          // Show the error and fall back to heuristic
+          setLlmFailed(true);
+          if (llmErrorText) {
+            setError(llmErrorText);
+          }
+          setProgress('Falling back to heuristic parser...');
           parsed = parseReceipt(ocrResult);
         }
       } else {
@@ -96,8 +107,24 @@ export default function ImagePreview({ image, onResult, onCancel }: ImagePreview
         />
       </div>
 
+      {/* LLM fallback notice */}
+      {llmFailed && !loading && (
+        <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 text-sm">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+            <div>
+              <p className="font-medium">AI parser unavailable — used heuristic instead</p>
+              {error && <p className="mt-1 text-xs opacity-80">{error}</p>}
+              <p className="mt-1 text-xs opacity-60">
+                Switch to Heuristic parser in Settings to skip this warning next time.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Error */}
-      {error && (
+      {error && !llmFailed && (
         <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-destructive text-sm">
           {error}
         </div>

@@ -11,7 +11,7 @@ export interface AppSettings {
 
 const DEFAULTS: AppSettings = {
   ocrModelSize: 'PP-OCRv6_small',
-  parserMode: 'heuristic',
+  parserMode: 'ai',
 };
 
 export function loadSettings(): AppSettings {

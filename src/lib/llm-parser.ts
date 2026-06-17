@@ -12,6 +12,11 @@ export interface LLMProgress {
   text: string;
 }
 
+export interface LLMStatus {
+  supported: boolean;
+  reason?: string; // why it's not supported, if applicable
+}
+
 // ── Model config ─────────────────────────────────────────────────
 
 // Smallest viable model for receipt parsing (~400MB)
@@ -22,6 +27,42 @@ const MODEL_ID = 'Llama-3.2-1B-Instruct-q4f16_1-MLC';
 let engine: MLCEngine | null = null;
 let initPromise: Promise<MLCEngine> | null = null;
 let initError: string | null = null;
+
+// ── WebGPU detection ─────────────────────────────────────────────
+
+export async function checkLLMSupport(): Promise<LLMStatus> {
+  // Check WebGPU API existence
+  if (!('gpu' in navigator)) {
+    return {
+      supported: false,
+      reason:
+        'WebGPU is not available in this browser. ' +
+        'AI parser requires Chrome 113+, Edge 113+, or Firefox 130+.',
+    };
+  }
+
+  // Check if we can get a GPU adapter
+  try {
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) {
+      return {
+        supported: false,
+        reason:
+          'No GPU adapter found. Your device may not support WebGPU, ' +
+          'or GPU acceleration may be disabled.',
+      };
+    }
+  } catch (err) {
+    return {
+      supported: false,
+      reason:
+        'WebGPU access denied: ' +
+        (err instanceof Error ? err.message : 'Unknown error'),
+    };
+  }
+
+  return { supported: true };
+}
 
 // ── Prompt template ──────────────────────────────────────────────
 
@@ -50,7 +91,7 @@ ${rawText}
 Return ONLY the JSON object with this exact structure:
 {
   "merchant": "Store Name or null",
-  "date": "YYYY-MM-DD or null", 
+  "date": "YYYY-MM-DD or null",
   "total": 12.34,
   "tax": 1.23,
   "line_items": [
@@ -62,12 +103,12 @@ Return ONLY the JSON object with this exact structure:
 // ── Init ─────────────────────────────────────────────────────────
 
 export async function initLLMParser(
-  onProgress?: (p: LLMProgress) => void
+  onProgress?: (p: LLMProgress) => void,
 ): Promise<boolean> {
   // Already initialized
   if (engine) return true;
 
-  // Already failed
+  // Already failed — report the error again
   if (initError) {
     onProgress?.({ status: 'error', progress: 0, text: initError });
     return false;
@@ -83,10 +124,18 @@ export async function initLLMParser(
     }
   }
 
+  // Check WebGPU support first
+  const gpuStatus = await checkLLMSupport();
+  if (!gpuStatus.supported) {
+    initError = gpuStatus.reason || 'WebGPU not available';
+    onProgress?.({ status: 'error', progress: 0, text: initError });
+    return false;
+  }
+
   onProgress?.({ status: 'downloading', progress: 0, text: 'Loading AI model...' });
 
   initPromise = (async () => {
-    // Dynamic import so Vite can code-split the 7MB WebLLM JS bundle
+    // Dynamic import so Vite can code-split the ~6MB WebLLM JS bundle
     const { CreateMLCEngine } = await import('@mlc-ai/web-llm');
 
     engine = await CreateMLCEngine(MODEL_ID, {
@@ -109,7 +158,17 @@ export async function initLLMParser(
     onProgress?.({ status: 'ready', progress: 1, text: 'AI model ready' });
     return true;
   } catch (err) {
-    initError = err instanceof Error ? err.message : 'Unknown error';
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    // Make error user-friendly
+    if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
+      initError =
+        'Failed to download AI model. Check your internet connection. ' +
+        'The model is ~400MB and needs to be downloaded once.';
+    } else if (msg.includes('WebGPU')) {
+      initError = 'WebGPU not available. AI parser requires a GPU-accelerated browser.';
+    } else {
+      initError = `AI model failed to load: ${msg}`;
+    }
     engine = null;
     initPromise = null;
     onProgress?.({ status: 'error', progress: 0, text: initError });
@@ -141,7 +200,7 @@ function parseLLMJson(jsonStr: string, rawText: string): ParsedReceipt {
         amount: typeof li.amount === 'number' ? li.amount : null,
         quantity: typeof li.quantity === 'number' ? li.quantity : null,
         confidence: 0.95, // LLM confidence
-      })
+      }),
     );
 
     return {
@@ -167,9 +226,7 @@ function parseLLMJson(jsonStr: string, rawText: string): ParsedReceipt {
   }
 }
 
-export async function parseReceiptWithLLM(
-  rawText: string
-): Promise<ParsedReceipt> {
+export async function parseReceiptWithLLM(rawText: string): Promise<ParsedReceipt> {
   if (!engine) {
     throw new Error('LLM parser not initialized. Call initLLMParser() first.');
   }
@@ -214,7 +271,6 @@ export function ocrResultToText(result: OcrResult): string {
 
 export function disposeLLMParser(): void {
   if (engine) {
-    // WebLLM engine doesn't have an explicit dispose, but we can release the reference
     engine = null;
   }
   initPromise = null;

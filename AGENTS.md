@@ -92,8 +92,8 @@ Configurable in Settings tab. Stored in `localStorage`. Changing the model dispo
 
 Two modes available in Settings:
 
-- **Heuristic** (default): Regex-based parser. Instant, zero download. Handles common receipt formats (USD, GBP, EUR). Limited accuracy on complex layouts.
-- **AI (Llama 3.2 1B)**: In-browser LLM via WebLLM + WebGPU. ~400MB model download (cached in IndexedDB after first use). Much better at understanding diverse receipt layouts, handling OCR noise, and extracting structured data correctly. Falls back to heuristic if WebGPU unavailable or model download fails.
+- **Heuristic**: Regex-based parser. Instant, zero download. Handles common receipt formats (USD, GBP, EUR). Limited accuracy on complex layouts.
+- **AI (Llama 3.2 1B)** (default): In-browser LLM via WebLLM + WebGPU. ~400MB model download (cached in IndexedDB after first use). Much better at understanding diverse receipt layouts, handling OCR noise, and extracting structured data correctly. Falls back to heuristic if WebGPU unavailable or model download fails.
 
 The AI parser model (`Llama-3.2-1B-Instruct-q4f16_1-MLC`) is loaded via dynamic `import()` to keep it out of the main bundle. First-time download shows progress percentage; subsequent uses load from cache (near-instant).
 
