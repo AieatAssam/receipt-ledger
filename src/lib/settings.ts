@@ -1,13 +1,17 @@
+import type { ParserMode } from './llm-parser';
+
 const SETTINGS_KEY = 'receipt-ledger-settings';
 
 export type OcrModelSize = 'PP-OCRv6_small' | 'PP-OCRv6_tiny';
 
 export interface AppSettings {
   ocrModelSize: OcrModelSize;
+  parserMode: ParserMode;
 }
 
 const DEFAULTS: AppSettings = {
   ocrModelSize: 'PP-OCRv6_small',
+  parserMode: 'heuristic',
 };
 
 export function loadSettings(): AppSettings {

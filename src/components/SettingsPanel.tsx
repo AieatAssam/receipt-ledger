@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { Download, Cpu, Info } from 'lucide-react';
+import { Download, Cpu, Info, Brain } from 'lucide-react';
 import { db } from '../lib/db';
 import { loadSettings, saveSettings, type AppSettings, type OcrModelSize } from '../lib/settings';
 import { disposeOCR } from '../lib/ocr';
+import { type ParserMode } from '../lib/llm-parser';
 
 export default function SettingsPanel() {
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
@@ -14,6 +15,12 @@ export default function SettingsPanel() {
     saveSettings(updated);
     // Dispose OCR so it reinitializes with new model size on next use
     disposeOCR();
+  };
+
+  const handleParserModeChange = (mode: ParserMode) => {
+    const updated = { ...settings, parserMode: mode };
+    setSettings(updated);
+    saveSettings(updated);
   };
 
   const handleExport = async () => {
@@ -71,6 +78,52 @@ export default function SettingsPanel() {
                   }`}
                 >
                   {settings.ocrModelSize === opt.value && (
+                    <div className="w-2 h-2 rounded-full bg-primary" />
+                  )}
+                </div>
+                <span className="text-sm font-medium">{opt.label}</span>
+              </div>
+              <p className="text-xs text-muted-foreground mt-1 ml-6">{opt.desc}</p>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Parser Mode */}
+      <div className="rounded-xl bg-card border border-border p-4">
+        <div className="flex items-start gap-3 mb-3">
+          <Brain className="w-5 h-5 text-primary mt-0.5 shrink-0" />
+          <div>
+            <h3 className="text-sm font-semibold">Receipt Parser</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Choose how OCR text is interpreted. AI parser is smarter but needs to download a model (~400MB, cached after first use).
+            </p>
+          </div>
+        </div>
+
+        <div className="flex gap-2">
+          {([
+            { value: 'heuristic' as const, label: 'Heuristic', desc: 'Regex-based. Instant, no download.' },
+            { value: 'ai' as const, label: 'AI (Llama 3.2 1B)', desc: 'In-browser LLM. ~400MB download, better accuracy.' },
+          ]).map(opt => (
+            <button
+              key={opt.value}
+              onClick={() => handleParserModeChange(opt.value)}
+              className={`flex-1 p-3 rounded-lg border text-left transition-colors ${
+                settings.parserMode === opt.value
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border hover:bg-accent'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <div
+                  className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                    settings.parserMode === opt.value
+                      ? 'border-primary'
+                      : 'border-muted-foreground/30'
+                  }`}
+                >
+                  {settings.parserMode === opt.value && (
                     <div className="w-2 h-2 rounded-full bg-primary" />
                   )}
                 </div>

@@ -43,6 +43,7 @@
 | UI | Custom (shadcn-style) | — |
 | Icons | Lucide React | 1.20.0 |
 | OCR | PaddleOCR.js (Baidu PP-OCRv6) | 0.4.2 |
+| LLM Parser | WebLLM (Llama 3.2 1B Instruct) | 0.2.84 |
 | Database | PGlite (WASM Postgres) | 0.5.3 |
 | Hosting | GitHub Pages (static) | — |
 
@@ -58,7 +59,8 @@ src/
 ├── lib/
 │   ├── db.ts                   — PGlite singleton, schema, CRUD
 │   ├── ocr.ts                  — PaddleOCR.js worker wrapper
-│   ├── parser.ts               — OCR output → structured receipt
+│   ├── parser.ts               — Heuristic OCR → structured receipt
+│   ├── llm-parser.ts           — WebLLM-powered AI receipt parser
 │   ├── settings.ts             — localStorage-backed settings
 │   └── utils.ts                — cn() helper
 └── components/
@@ -83,6 +85,17 @@ Three tables: `merchants`, `receipts`, `line_items`. See `src/lib/db.ts` for DDL
 - **PP-OCRv6_tiny**: Faster, smaller download
 
 Configurable in Settings tab. Stored in `localStorage`. Changing the model disposes the current OCR instance; next scan reinitializes with the new model.
+
+---
+
+## Parser Modes
+
+Two modes available in Settings:
+
+- **Heuristic** (default): Regex-based parser. Instant, zero download. Handles common receipt formats (USD, GBP, EUR). Limited accuracy on complex layouts.
+- **AI (Llama 3.2 1B)**: In-browser LLM via WebLLM + WebGPU. ~400MB model download (cached in IndexedDB after first use). Much better at understanding diverse receipt layouts, handling OCR noise, and extracting structured data correctly. Falls back to heuristic if WebGPU unavailable or model download fails.
+
+The AI parser model (`Llama-3.2-1B-Instruct-q4f16_1-MLC`) is loaded via dynamic `import()` to keep it out of the main bundle. First-time download shows progress percentage; subsequent uses load from cache (near-instant).
 
 ---
 

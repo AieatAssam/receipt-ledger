@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { Scan, Trash2 } from 'lucide-react';
 import { initOCR, ocrImage } from '../lib/ocr';
 import { parseReceipt, type ParsedReceipt } from '../lib/parser';
+import { initLLMParser, parseReceiptWithLLM, ocrResultToText, type LLMProgress } from '../lib/llm-parser';
+import { loadSettings } from '../lib/settings';
 
 interface ImagePreviewProps {
   image: ImageBitmap;
@@ -31,18 +33,49 @@ export default function ImagePreview({ image, onResult, onCancel }: ImagePreview
   const handleExtract = useCallback(async () => {
     setLoading(true);
     setError(null);
-    setProgress('Initializing OCR engine...');
+
+    const settings = loadSettings();
+    const useLLM = settings.parserMode === 'ai';
 
     try {
+      // Step 1: OCR
+      setProgress('Initializing OCR engine...');
       await initOCR();
+
       setProgress('Processing image...');
+      const ocrResult = await ocrImage(image);
 
-      const result = await ocrImage(image);
-      setProgress('Parsing text...');
+      // Step 2: Parse
+      let parsed: ParsedReceipt;
 
-      const parsed = parseReceipt(result);
+      if (useLLM) {
+        // LLM path
+        setProgress('Loading AI model...');
+        const llmOk = await initLLMParser((p: LLMProgress) => {
+          if (p.status === 'downloading') {
+            setProgress(`Downloading AI model: ${Math.round(p.progress * 100)}%`);
+          } else if (p.status === 'loading') {
+            setProgress(`Loading AI model: ${Math.round(p.progress * 100)}%`);
+          } else if (p.status === 'error') {
+            setProgress(`AI model error: ${p.text}. Falling back to heuristic...`);
+          }
+        });
 
-      // Clean up blob URL if we created one
+        if (llmOk) {
+          setProgress('Analyzing receipt with AI...');
+          const rawText = ocrResultToText(ocrResult);
+          parsed = await parseReceiptWithLLM(rawText);
+        } else {
+          // Fall back to heuristic
+          setProgress('Parsing text...');
+          parsed = parseReceipt(ocrResult);
+        }
+      } else {
+        // Heuristic path
+        setProgress('Parsing text...');
+        parsed = parseReceipt(ocrResult);
+      }
+
       onResult(parsed);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'OCR failed');
