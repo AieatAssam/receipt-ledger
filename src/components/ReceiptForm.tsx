@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Save, Plus, Trash2 } from 'lucide-react';
+import { Save, Plus, Trash2, AlertTriangle } from 'lucide-react';
 import { cn } from '../lib/utils';
 import type { ParsedReceipt } from '../lib/parser';
 
@@ -82,6 +82,21 @@ export default function ReceiptForm({ parsed, onSave, onCancel }: ReceiptFormPro
           OCR: {Math.round(parsed.confidence * 100)}%
         </span>
       </div>
+
+      {/* AI parser fallback warning */}
+      {parsed.warning && (
+        <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 text-sm">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+            <div>
+              <p className="font-medium">{parsed.warning}</p>
+              <p className="mt-1 text-xs opacity-60">
+                Switch to Heuristic parser in Settings to skip this next time.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Merchant */}
       <div className="flex flex-col gap-1.5">

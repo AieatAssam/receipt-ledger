@@ -15,6 +15,8 @@ export interface ParsedReceipt {
   lineItems: ParsedLineItem[];
   confidence: number;
   rawText: string;
+  /** Warning message to display to the user (e.g. AI parser fell back to heuristic) */
+  warning?: string;
 }
 
 interface OcrItem {
