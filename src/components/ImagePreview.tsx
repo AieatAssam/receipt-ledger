@@ -65,9 +65,13 @@ export default function ImagePreview({ image, onResult, onCancel }: ImagePreview
         });
 
         if (llmOk) {
-          setProgress('Analyzing receipt with AI...');
+          setProgress('Generating response… 0 chars');
           const rawText = ocrResultToText(ocrResult);
-          parsed = await parseReceiptWithLLM(rawText);
+          parsed = await parseReceiptWithLLM(rawText, (p: LLMProgress) => {
+            if (p.status === 'loading') {
+              setProgress(p.text);
+            }
+          });
         } else {
           // Fall back to heuristic with a visible warning
           setProgress('Falling back to heuristic parser...');

@@ -161,13 +161,14 @@ export async function initLLMParser(
       wllamaInstance = { Wllama: (await import('@wllama/wllama')).Wllama, wllama };
 
       // Load model from HuggingFace Hub
-      // wllama auto-detects WebGPU — uses GPU if available, falls back to WASM SIMD
+      // Force n_threads=1 for mobile reliability (multi-thread WASM can OOM on phones)
       await wllama.loadModelFromHF(
         {
           repo: model.hfRepo,
           file: model.hfFile,
         },
         {
+          n_threads: 1,
           progressCallback: ({ loaded, total }: { loaded: number; total: number }) => {
             const pct = total > 0 ? loaded / total : 0;
             if (pct < 0.99) {
@@ -259,24 +260,61 @@ function parseLLMJson(jsonStr: string, rawText: string): ParsedReceipt {
   }
 }
 
-export async function parseReceiptWithLLM(rawText: string): Promise<ParsedReceipt> {
+const INFERENCE_TIMEOUT_MS = 120_000; // 2 minutes max for WASM inference
+
+export async function parseReceiptWithLLM(
+  rawText: string,
+  onProgress?: (p: LLMProgress) => void,
+): Promise<ParsedReceipt> {
   if (!wllamaInstance) {
     throw new Error('LLM parser not initialized. Call initLLMParser() first.');
   }
 
   const { wllama } = wllamaInstance;
 
-  const response = await wllama.createChatCompletion({
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: buildUserPrompt(rawText) },
-    ],
-    temperature: 0,
-    max_tokens: 1000,
-  });
+  // Accumulate tokens as they stream in
+  let fullContent = '';
+  let lastReportTime = Date.now();
 
-  const content = response.choices?.[0]?.message?.content || '';
-  const json = extractJson(content as string);
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error('Inference timed out after 2 minutes. Try a smaller model or shorter receipt.')), INFERENCE_TIMEOUT_MS)
+  );
+
+  try {
+    const inferencePromise = wllama.createChatCompletion(
+      {
+        messages: [
+          { role: 'system', content: SYSTEM_PROMPT },
+          { role: 'user', content: buildUserPrompt(rawText) },
+        ],
+        temperature: 0,
+        max_tokens: 512,
+        stream: true,
+        onData: (chunk) => {
+          const token = chunk.choices?.[0]?.delta?.content || '';
+          fullContent += token;
+
+          // Throttle progress updates to every 200ms
+          const now = Date.now();
+          if (now - lastReportTime > 200) {
+            lastReportTime = now;
+            onProgress?.({
+              status: 'loading',
+              progress: Math.min(fullContent.length / 500, 0.95),
+              text: `Generating… ${fullContent.length} chars`,
+            });
+          }
+        },
+      },
+    );
+
+    await Promise.race([inferencePromise, timeoutPromise]);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    throw new Error(`AI inference failed: ${msg}`);
+  }
+
+  const json = extractJson(fullContent);
   return parseLLMJson(json, rawText);
 }
 
