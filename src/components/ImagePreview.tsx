@@ -49,15 +49,13 @@ export default function ImagePreview({ image, onResult, onCancel }: ImagePreview
       let parsed: ParsedReceipt;
 
       if (useLLM) {
-        // LLM path
+        // LLM path — init with user's chosen model
         let llmOk = false;
         let llmErrorText: string | null = null;
 
-        await initLLMParser((p: LLMProgress) => {
-          if (p.status === 'downloading') {
-            setProgress(`Downloading AI model: ${Math.round(p.progress * 100)}%`);
-          } else if (p.status === 'loading') {
-            setProgress(`Loading AI model: ${Math.round(p.progress * 100)}%`);
+        await initLLMParser(settings.aiModel, (p: LLMProgress) => {
+          if (p.status === 'downloading' || p.status === 'loading') {
+            setProgress(p.text);
           } else if (p.status === 'error') {
             llmErrorText = p.text;
             setProgress('');

@@ -7,11 +7,13 @@ export type OcrModelSize = 'PP-OCRv6_small' | 'PP-OCRv6_tiny';
 export interface AppSettings {
   ocrModelSize: OcrModelSize;
   parserMode: ParserMode;
+  aiModel: string;
 }
 
 const DEFAULTS: AppSettings = {
   ocrModelSize: 'PP-OCRv6_small',
   parserMode: 'ai',
+  aiModel: 'qwen2.5-0.5b',
 };
 
 export function loadSettings(): AppSettings {

@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { Download, Cpu, Info, Brain } from 'lucide-react';
+import { Download, Cpu, Info, Brain, Layers } from 'lucide-react';
 import { db } from '../lib/db';
 import { loadSettings, saveSettings, type AppSettings, type OcrModelSize } from '../lib/settings';
 import { disposeOCR } from '../lib/ocr';
-import { type ParserMode } from '../lib/llm-parser';
+import { type ParserMode, AI_MODEL_CATALOG, type AICatalogEntry } from '../lib/llm-parser';
 
 export default function SettingsPanel() {
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
@@ -13,12 +13,17 @@ export default function SettingsPanel() {
     const updated = { ...settings, ocrModelSize: size };
     setSettings(updated);
     saveSettings(updated);
-    // Dispose OCR so it reinitializes with new model size on next use
     disposeOCR();
   };
 
   const handleParserModeChange = (mode: ParserMode) => {
     const updated = { ...settings, parserMode: mode };
+    setSettings(updated);
+    saveSettings(updated);
+  };
+
+  const handleAIModelChange = (modelId: string) => {
+    const updated = { ...settings, aiModel: modelId };
     setSettings(updated);
     saveSettings(updated);
   };
@@ -96,7 +101,7 @@ export default function SettingsPanel() {
           <div>
             <h3 className="text-sm font-semibold">Receipt Parser</h3>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Choose how OCR text is interpreted. AI parser is smarter but needs to download a model (~400MB, cached after first use).
+              Heuristic is instant. AI uses an in-browser LLM via WebAssembly — works on any device, no GPU required.
             </p>
           </div>
         </div>
@@ -104,7 +109,7 @@ export default function SettingsPanel() {
         <div className="flex gap-2">
           {([
             { value: 'heuristic' as const, label: 'Heuristic', desc: 'Regex-based. Instant, no download.' },
-            { value: 'ai' as const, label: 'AI (Llama 3.2 1B)', desc: 'In-browser LLM. ~400MB download, better accuracy.' },
+            { value: 'ai' as const, label: 'AI (WASM)', desc: 'In-browser LLM. Works everywhere, no GPU needed.' },
           ]).map(opt => (
             <button
               key={opt.value}
@@ -134,6 +139,58 @@ export default function SettingsPanel() {
           ))}
         </div>
       </div>
+
+      {/* AI Model Selector — only shown when AI mode */}
+      {settings.parserMode === 'ai' && (
+        <div className="rounded-xl bg-card border border-primary/20 p-4">
+          <div className="flex items-start gap-3 mb-3">
+            <Layers className="w-5 h-5 text-primary mt-0.5 shrink-0" />
+            <div>
+              <h3 className="text-sm font-semibold">AI Model</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Models download once (~{AI_MODEL_CATALOG.find(m => m.id === settings.aiModel)?.sizeMB || '—'} MB) and are cached for future use.
+                All run in-browser via WebAssembly — no GPU, no server.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            {AI_MODEL_CATALOG.map((model: AICatalogEntry) => (
+              <button
+                key={model.id}
+                onClick={() => handleAIModelChange(model.id)}
+                className={`p-3 rounded-lg border text-left transition-colors ${
+                  settings.aiModel === model.id
+                    ? 'border-primary bg-primary/5'
+                    : 'border-border hover:bg-accent'
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-1">
+                  <div
+                    className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                      settings.aiModel === model.id
+                        ? 'border-primary'
+                        : 'border-muted-foreground/30'
+                    }`}
+                  >
+                    {settings.aiModel === model.id && (
+                      <div className="w-2 h-2 rounded-full bg-primary" />
+                    )}
+                  </div>
+                  <span className="text-sm font-medium">{model.name}</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-secondary text-secondary-foreground font-mono">
+                    {model.architecture}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground ml-auto tabular-nums">
+                    {model.sizeMB} MB
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground ml-6">{model.description}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Export */}
       <div className="rounded-xl bg-card border border-border p-4">
@@ -178,6 +235,18 @@ export default function SettingsPanel() {
                 Baidu PP-OCRv6
               </a>
               {' '}running in-browser via ONNX Runtime Web.
+            </p>
+            <p className="text-xs text-muted-foreground mt-2">
+              AI parser powered by{' '}
+              <a
+                href="https://github.com/ngxson/wllama"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary hover:underline"
+              >
+                wllama
+              </a>
+              {' '}— WebAssembly binding for llama.cpp. No GPU, no server.
             </p>
             <p className="text-xs text-muted-foreground mt-2">
               Database powered by{' '}

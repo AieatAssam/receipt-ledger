@@ -1,4 +1,3 @@
-import type { MLCEngine } from '@mlc-ai/web-llm';
 import type { OcrResult } from '@paddleocr/paddleocr-js';
 import type { ParsedReceipt, ParsedLineItem } from './parser';
 
@@ -12,56 +11,52 @@ export interface LLMProgress {
   text: string;
 }
 
-export interface LLMStatus {
-  supported: boolean;
-  reason?: string; // why it's not supported, if applicable
+// ── Model catalog ────────────────────────────────────────────────
+
+export interface AICatalogEntry {
+  id: string;
+  name: string;
+  architecture: string;
+  hfRepo: string;
+  hfFile: string;
+  sizeMB: number;
+  description: string;
 }
 
-// ── Model config ─────────────────────────────────────────────────
+export const AI_MODEL_CATALOG: AICatalogEntry[] = [
+  {
+    id: 'qwen2.5-0.5b',
+    name: 'Qwen 2.5 0.5B',
+    architecture: 'Qwen',
+    hfRepo: 'bartowski/Qwen2.5-0.5B-Instruct-GGUF',
+    hfFile: 'Qwen2.5-0.5B-Instruct-IQ4_XS.gguf',
+    sizeMB: 333,
+    description: 'Best balance of speed and accuracy. Great at structured extraction.',
+  },
+  {
+    id: 'smollm2-360m',
+    name: 'SmolLM2 360M',
+    architecture: 'SmolLM',
+    hfRepo: 'bartowski/SmolLM2-360M-Instruct-GGUF',
+    hfFile: 'SmolLM2-360M-Instruct-IQ4_XS.gguf',
+    sizeMB: 216,
+    description: 'Tiniest option. Fast download, less capable on complex receipts.',
+  },
+  {
+    id: 'llama3.2-1b',
+    name: 'Llama 3.2 1B',
+    architecture: 'Llama',
+    hfRepo: 'bartowski/Llama-3.2-1B-Instruct-GGUF',
+    hfFile: 'Llama-3.2-1B-Instruct-IQ4_XS.gguf',
+    sizeMB: 709,
+    description: 'Highest quality. Large download, may strain mobile memory.',
+  },
+];
 
-// Smallest viable model for receipt parsing (~400MB)
-const MODEL_ID = 'Llama-3.2-1B-Instruct-q4f16_1-MLC';
+const DEFAULT_MODEL_ID = 'qwen2.5-0.5b';
 
-// ── Engine singleton ─────────────────────────────────────────────
-
-let engine: MLCEngine | null = null;
-let initPromise: Promise<MLCEngine> | null = null;
-let initError: string | null = null;
-
-// ── WebGPU detection ─────────────────────────────────────────────
-
-export async function checkLLMSupport(): Promise<LLMStatus> {
-  // Check WebGPU API existence
-  if (!('gpu' in navigator)) {
-    return {
-      supported: false,
-      reason:
-        'WebGPU is not available in this browser. ' +
-        'AI parser requires Chrome 113+, Edge 113+, or Firefox 130+.',
-    };
-  }
-
-  // Check if we can get a GPU adapter
-  try {
-    const adapter = await navigator.gpu.requestAdapter();
-    if (!adapter) {
-      return {
-        supported: false,
-        reason:
-          'No GPU adapter found. Your device may not support WebGPU, ' +
-          'or GPU acceleration may be disabled.',
-      };
-    }
-  } catch (err) {
-    return {
-      supported: false,
-      reason:
-        'WebGPU access denied: ' +
-        (err instanceof Error ? err.message : 'Unknown error'),
-    };
-  }
-
-  return { supported: true };
+export function getModelEntry(id: string): AICatalogEntry {
+  return AI_MODEL_CATALOG.find(m => m.id === id) || AI_MODEL_CATALOG[0];
 }
 
 // ── Prompt template ──────────────────────────────────────────────
@@ -100,13 +95,46 @@ Return ONLY the JSON object with this exact structure:
 }`;
 }
 
+// ── Wllama singleton ─────────────────────────────────────────────
+
+let wllamaInstance: Awaited<ReturnType<typeof createWllamaInstance>> | null = null;
+let initPromise: Promise<boolean> | null = null;
+let initError: string | null = null;
+let currentModelId: string | null = null;
+
+async function createWllamaInstance() {
+  // Dynamic import so Vite can code-split wllama
+  const { Wllama, LoggerWithoutDebug } = await import('@wllama/wllama');
+
+  // Path to the WASM file (copied to public/ by prebuild script)
+  const wllama = new Wllama(
+    {
+      default: `${import.meta.env.BASE_URL}wllama/wllama.wasm`,
+    },
+    {
+      logger: LoggerWithoutDebug,
+      parallelDownloads: 5,
+    },
+  );
+
+  return { Wllama, wllama };
+}
+
 // ── Init ─────────────────────────────────────────────────────────
 
 export async function initLLMParser(
+  modelId: string = DEFAULT_MODEL_ID,
   onProgress?: (p: LLMProgress) => void,
 ): Promise<boolean> {
-  // Already initialized
-  if (engine) return true;
+  // Already initialized with the right model
+  if (wllamaInstance && currentModelId === modelId) {
+    return true;
+  }
+
+  // Different model requested — dispose and re-init
+  if (wllamaInstance && currentModelId !== modelId) {
+    await disposeLLMParser();
+  }
 
   // Already failed — report the error again
   if (initError) {
@@ -116,62 +144,72 @@ export async function initLLMParser(
 
   // Already initializing
   if (initPromise) {
+    return initPromise;
+  }
+
+  const model = getModelEntry(modelId);
+
+  initPromise = (async (): Promise<boolean> => {
     try {
-      await initPromise;
+      onProgress?.({
+        status: 'downloading',
+        progress: 0,
+        text: `Loading ${model.name} (${model.sizeMB} MB)...`,
+      });
+
+      const { wllama } = await createWllamaInstance();
+      wllamaInstance = { Wllama: (await import('@wllama/wllama')).Wllama, wllama };
+
+      // Load model from HuggingFace Hub
+      // wllama auto-detects WebGPU — uses GPU if available, falls back to WASM SIMD
+      await wllama.loadModelFromHF(
+        {
+          repo: model.hfRepo,
+          file: model.hfFile,
+        },
+        {
+          progressCallback: ({ loaded, total }: { loaded: number; total: number }) => {
+            const pct = total > 0 ? loaded / total : 0;
+            if (pct < 0.99) {
+              onProgress?.({
+                status: 'downloading',
+                progress: pct,
+                text: `Downloading ${model.name}: ${Math.round(pct * 100)}%`,
+              });
+            } else {
+              onProgress?.({
+                status: 'loading',
+                progress: pct,
+                text: `Loading ${model.name} into memory...`,
+              });
+            }
+          },
+        },
+      );
+
+      currentModelId = modelId;
+      onProgress?.({ status: 'ready', progress: 1, text: `${model.name} ready` });
       return true;
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
+        initError = `Failed to download ${model.name}. Check your internet connection.`;
+      } else {
+        initError = `Failed to load ${model.name}: ${msg}`;
+      }
+      wllamaInstance = null;
+      currentModelId = null;
+      onProgress?.({ status: 'error', progress: 0, text: initError });
       return false;
     }
-  }
-
-  // Check WebGPU support first
-  const gpuStatus = await checkLLMSupport();
-  if (!gpuStatus.supported) {
-    initError = gpuStatus.reason || 'WebGPU not available';
-    onProgress?.({ status: 'error', progress: 0, text: initError });
-    return false;
-  }
-
-  onProgress?.({ status: 'downloading', progress: 0, text: 'Loading AI model...' });
-
-  initPromise = (async () => {
-    // Dynamic import so Vite can code-split the ~6MB WebLLM JS bundle
-    const { CreateMLCEngine } = await import('@mlc-ai/web-llm');
-
-    engine = await CreateMLCEngine(MODEL_ID, {
-      initProgressCallback: (p: { progress: number; text: string }) => {
-        const status: LLMProgress['status'] =
-          p.progress === 1 ? 'ready' : p.progress > 0 ? 'loading' : 'downloading';
-        onProgress?.({
-          status,
-          progress: p.progress,
-          text: p.text || 'Loading...',
-        });
-      },
-    });
-
-    return engine;
   })();
 
   try {
-    await initPromise;
-    onProgress?.({ status: 'ready', progress: 1, text: 'AI model ready' });
-    return true;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : 'Unknown error';
-    // Make error user-friendly
-    if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
-      initError =
-        'Failed to download AI model. Check your internet connection. ' +
-        'The model is ~400MB and needs to be downloaded once.';
-    } else if (msg.includes('WebGPU')) {
-      initError = 'WebGPU not available. AI parser requires a GPU-accelerated browser.';
-    } else {
-      initError = `AI model failed to load: ${msg}`;
-    }
-    engine = null;
+    const ok = await initPromise;
     initPromise = null;
-    onProgress?.({ status: 'error', progress: 0, text: initError });
+    return ok;
+  } catch {
+    initPromise = null;
     return false;
   }
 }
@@ -179,14 +217,10 @@ export async function initLLMParser(
 // ── Parse ────────────────────────────────────────────────────────
 
 function extractJson(text: string): string {
-  // Try to find JSON between braces
   const match = text.match(/\{[\s\S]*\}/);
   if (match) return match[0];
-
-  // Try to find JSON array
   const arrMatch = text.match(/\[[\s\S]*\]/);
   if (arrMatch) return arrMatch[0];
-
   return text;
 }
 
@@ -199,7 +233,7 @@ function parseLLMJson(jsonStr: string, rawText: string): ParsedReceipt {
         description: String(li.description || ''),
         amount: typeof li.amount === 'number' ? li.amount : null,
         quantity: typeof li.quantity === 'number' ? li.quantity : null,
-        confidence: 0.95, // LLM confidence
+        confidence: 0.95,
       }),
     );
 
@@ -213,7 +247,6 @@ function parseLLMJson(jsonStr: string, rawText: string): ParsedReceipt {
       rawText,
     };
   } catch {
-    // If JSON parsing fails, return empty result
     return {
       merchant: null,
       date: null,
@@ -227,23 +260,23 @@ function parseLLMJson(jsonStr: string, rawText: string): ParsedReceipt {
 }
 
 export async function parseReceiptWithLLM(rawText: string): Promise<ParsedReceipt> {
-  if (!engine) {
+  if (!wllamaInstance) {
     throw new Error('LLM parser not initialized. Call initLLMParser() first.');
   }
 
-  const messages = [
-    { role: 'system' as const, content: SYSTEM_PROMPT },
-    { role: 'user' as const, content: buildUserPrompt(rawText) },
-  ];
+  const { wllama } = wllamaInstance;
 
-  const reply = await engine.chat.completions.create({
-    messages,
+  const response = await wllama.createChatCompletion({
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: buildUserPrompt(rawText) },
+    ],
     temperature: 0,
     max_tokens: 1000,
   });
 
-  const content = reply.choices[0]?.message?.content || '';
-  const json = extractJson(content);
+  const content = response.choices?.[0]?.message?.content || '';
+  const json = extractJson(content as string);
   return parseLLMJson(json, rawText);
 }
 
@@ -252,7 +285,6 @@ export async function parseReceiptWithLLM(rawText: string): Promise<ParsedReceip
 export function ocrResultToText(result: OcrResult): string {
   if (!result.items?.length) return '';
 
-  // Sort by Y coordinate (top to bottom), then X (left to right)
   const sorted = [...result.items].sort((a, b) => {
     const aY = Math.min(...a.poly.map(p => p[1]));
     const bY = Math.min(...b.poly.map(p => p[1]));
@@ -269,10 +301,16 @@ export function ocrResultToText(result: OcrResult): string {
 
 // ── Dispose ──────────────────────────────────────────────────────
 
-export function disposeLLMParser(): void {
-  if (engine) {
-    engine = null;
+export async function disposeLLMParser(): Promise<void> {
+  if (wllamaInstance) {
+    try {
+      await wllamaInstance.wllama.exit();
+    } catch {
+      // ignore dispose errors
+    }
+    wllamaInstance = null;
   }
+  currentModelId = null;
   initPromise = null;
   initError = null;
 }
@@ -280,7 +318,7 @@ export function disposeLLMParser(): void {
 // ── Status ───────────────────────────────────────────────────────
 
 export function isLLMReady(): boolean {
-  return engine !== null;
+  return wllamaInstance !== null;
 }
 
 export function getLLMError(): string | null {

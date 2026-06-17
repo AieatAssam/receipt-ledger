@@ -43,7 +43,7 @@
 | UI | Custom (shadcn-style) | — |
 | Icons | Lucide React | 1.20.0 |
 | OCR | PaddleOCR.js (Baidu PP-OCRv6) | 0.4.2 |
-| LLM Parser | WebLLM (Llama 3.2 1B Instruct) | 0.2.84 |
+| LLM Parser | wllama (Qwen 2.5 0.5B default) | 3.5.1 |
 | Database | PGlite (WASM Postgres) | 0.5.3 |
 | Hosting | GitHub Pages (static) | — |
 
@@ -60,7 +60,7 @@ src/
 │   ├── db.ts                   — PGlite singleton, schema, CRUD
 │   ├── ocr.ts                  — PaddleOCR.js worker wrapper
 │   ├── parser.ts               — Heuristic OCR → structured receipt
-│   ├── llm-parser.ts           — WebLLM-powered AI receipt parser
+│   ├── llm-parser.ts           — wllama-powered AI receipt parser
 │   ├── settings.ts             — localStorage-backed settings
 │   └── utils.ts                — cn() helper
 └── components/
@@ -93,9 +93,7 @@ Configurable in Settings tab. Stored in `localStorage`. Changing the model dispo
 Two modes available in Settings:
 
 - **Heuristic**: Regex-based parser. Instant, zero download. Handles common receipt formats (USD, GBP, EUR). Limited accuracy on complex layouts.
-- **AI (Llama 3.2 1B)** (default): In-browser LLM via WebLLM + WebGPU. ~400MB model download (cached in IndexedDB after first use). Much better at understanding diverse receipt layouts, handling OCR noise, and extracting structured data correctly. Falls back to heuristic if WebGPU unavailable or model download fails.
-
-The AI parser model (`Llama-3.2-1B-Instruct-q4f16_1-MLC`) is loaded via dynamic `import()` to keep it out of the main bundle. First-time download shows progress percentage; subsequent uses load from cache (near-instant).
+- **AI (LLM)**: In-browser LLM via wllama (WebAssembly binding for llama.cpp). Three models available: Qwen 2.5 0.5B (default, 333MB), SmolLM2 360M (216MB), Llama 3.2 1B (709MB). Models download from HuggingFace Hub and are cached in IndexedDB after first use. **No GPU required** — wllama runs on WebAssembly SIMD everywhere, with optional WebGPU acceleration if available. Falls back to heuristic if model download fails.
 
 ---
 
