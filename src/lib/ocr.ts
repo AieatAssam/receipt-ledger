@@ -1,6 +1,9 @@
 import { PaddleOCR, type OcrResult } from '@paddleocr/paddleocr-js';
 import { loadSettings, type OcrModelSize } from './settings';
 
+// Use locally-bundled ONNX Runtime WASM so versions never drift
+const ONNX_WASM_DIR = `${import.meta.env.BASE_URL}onnx/`;
+
 let ocrInstance: Awaited<ReturnType<typeof PaddleOCR.create>> | null = null;
 let currentModelSize: OcrModelSize | null = null;
 
@@ -31,7 +34,7 @@ export async function initOCR(): Promise<void> {
     worker: true,
     ortOptions: {
       backend: 'wasm',
-      wasmPaths: 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.21.1/dist/',
+      wasmPaths: ONNX_WASM_DIR,
     },
   });
 

@@ -1,2 +1,5 @@
 node_modules
 dist
+public/onnx/
+test-assets/
+tsconfig.tsbuildinfo
