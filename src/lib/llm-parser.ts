@@ -135,7 +135,7 @@ export async function initLLMParser(
           file: model.hfFile,
         },
         {
-          n_threads: 1,
+          n_threads: 2, // 2 threads balances speed vs mobile memory
           n_ctx: 512,
           progressCallback: ({ loaded, total }: { loaded: number; total: number }) => {
             const pct = total > 0 ? loaded / total : 0;
@@ -228,7 +228,7 @@ function parseLLMJson(jsonStr: string, rawText: string): ParsedReceipt {
   }
 }
 
-const INFERENCE_TIMEOUT_MS = 120_000;
+const INFERENCE_TIMEOUT_MS = 180_000; // 3 minutes for WASM on mobile
 
 export async function parseReceiptWithLLM(
   rawText: string,
