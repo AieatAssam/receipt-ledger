@@ -4,6 +4,7 @@ import type { OcrResult } from '@paddleocr/paddleocr-js';
 import { initOCR, ocrImage } from '../lib/ocr';
 import { parseReceipt, type ParsedReceipt } from '../lib/parser';
 import { initLLMParser, parseReceiptWithLLM, ocrResultToText, type LLMProgress } from '../lib/llm-parser';
+import { initWebLLMParser, parseReceiptWithWebLLM, type WebLLMProgress } from '../lib/llm-parser-webllm';
 import { loadSettings } from '../lib/settings';
 
 interface ImagePreviewProps {
@@ -124,36 +125,103 @@ export default function ImagePreview({ image, onResult, onCancel }: ImagePreview
       });
 
       // Step 2: Parse
+      // eslint-disable-next-line prefer-const
       let parsed: ParsedReceipt;
+      // Initialize to satisfy TS definite assignment — all paths reassign
+      parsed = parseReceipt(ocrResult);
 
       if (useLLM) {
+        const backend = settings.llmBackend;
         let llmOk = false;
         let llmErrorText: string | null = null;
 
-        await initLLMParser(settings.aiModel, (p: LLMProgress) => {
-          if (p.status === 'downloading' || p.status === 'loading') {
-            setProgress(p.text);
-          } else if (p.status === 'error') {
-            llmErrorText = p.text;
-            setProgress('');
-          } else if (p.status === 'ready') {
-            llmOk = true;
-          }
-        });
-
-        if (llmOk) {
-          setProgress('AI analyzing…');
-          setProgressDetail(`${rawText.length} chars of text from ${ocrResult.items?.length || 0} detected regions`);
-          parsed = await parseReceiptWithLLM(rawText, (p: LLMProgress) => {
-            if (p.status === 'processing') {
+        if (backend === 'webllm') {
+          // ── WebLLM (GPU) path ──
+          await initWebLLMParser(settings.webllmModel, (p: WebLLMProgress) => {
+            if (p.status === 'downloading' || p.status === 'loading') {
               setProgress(p.text);
-              setProgressDetail(`${rawText.length} chars from ${ocrResult.items?.length || 0} regions`);
-            } else if (p.status === 'loading') {
-              setProgress(p.text);
-              setProgressDetail('');
+            } else if (p.status === 'error') {
+              llmErrorText = p.text;
+              setProgress('');
+            } else if (p.status === 'ready') {
+              llmOk = true;
             }
           });
+
+          if (llmOk) {
+            setProgress('AI analyzing (GPU)…');
+            setProgressDetail(`${rawText.length} chars from ${ocrResult.items?.length || 0} regions`);
+            parsed = await parseReceiptWithWebLLM(rawText, (p: WebLLMProgress) => {
+              if (p.status === 'processing') {
+                setProgress(p.text);
+                setProgressDetail('');
+              } else if (p.status === 'loading') {
+                setProgress(p.text);
+                setProgressDetail('');
+              }
+            });
+          } else {
+            // WebLLM failed — try wllama CPU as secondary fallback
+            setProgress('GPU unavailable, trying CPU…');
+            setProgressDetail('');
+            llmOk = false;
+            llmErrorText = null;
+
+            await initLLMParser(settings.wllamaModel, (p: LLMProgress) => {
+              if (p.status === 'downloading' || p.status === 'loading') {
+                setProgress(p.text);
+              } else if (p.status === 'error') {
+                llmErrorText = p.text;
+                setProgress('');
+              } else if (p.status === 'ready') {
+                llmOk = true;
+              }
+            });
+
+            if (llmOk) {
+              setProgress('AI analyzing (CPU)…');
+              setProgressDetail(`${rawText.length} chars from ${ocrResult.items?.length || 0} regions`);
+              parsed = await parseReceiptWithLLM(rawText, (p: LLMProgress) => {
+                if (p.status === 'processing') {
+                  setProgress(p.text);
+                  setProgressDetail('');
+                } else if (p.status === 'loading') {
+                  setProgress(p.text);
+                  setProgressDetail('');
+                }
+              });
+            }
+          }
         } else {
+          // ── wllama (CPU) path ──
+          await initLLMParser(settings.wllamaModel, (p: LLMProgress) => {
+            if (p.status === 'downloading' || p.status === 'loading') {
+              setProgress(p.text);
+            } else if (p.status === 'error') {
+              llmErrorText = p.text;
+              setProgress('');
+            } else if (p.status === 'ready') {
+              llmOk = true;
+            }
+          });
+
+          if (llmOk) {
+            setProgress('AI analyzing (CPU)…');
+            setProgressDetail(`${rawText.length} chars from ${ocrResult.items?.length || 0} regions`);
+            parsed = await parseReceiptWithLLM(rawText, (p: LLMProgress) => {
+              if (p.status === 'processing') {
+                setProgress(p.text);
+                setProgressDetail('');
+              } else if (p.status === 'loading') {
+                setProgress(p.text);
+                setProgressDetail('');
+              }
+            });
+          }
+        }
+
+        // Fallback to heuristic if all LLM backends failed
+        if (!llmOk) {
           setProgress('Falling back to heuristic parser…');
           setProgressDetail('');
           parsed = parseReceipt(ocrResult);

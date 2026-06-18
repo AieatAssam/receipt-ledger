@@ -12,6 +12,7 @@
   "dependencies": {
     "@electric-sql/pglite": "^0.5.3",
     "@electric-sql/pglite-pgvector": "^0.0.4",
+    "@mlc-ai/web-llm": "^0.2.84",
     "@paddleocr/paddleocr-js": "^0.4.2",
     "@wllama/wllama": "^3.5.1",
     "clsx": "^2.1.1",

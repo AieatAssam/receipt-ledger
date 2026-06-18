@@ -4,6 +4,7 @@ import { db } from '../lib/db';
 import { loadSettings, saveSettings, type AppSettings, type OcrModelSize } from '../lib/settings';
 import { disposeOCR } from '../lib/ocr';
 import { type ParserMode, AI_MODEL_CATALOG, type AICatalogEntry } from '../lib/llm-parser';
+import { type LLMBackend, WEBLLM_MODEL_CATALOG, hasWebGPU, type WebLLMModelEntry } from '../lib/llm-parser-webllm';
 
 export default function SettingsPanel() {
   const [settings, setSettings] = useState<AppSettings>(loadSettings);
@@ -22,8 +23,18 @@ export default function SettingsPanel() {
     saveSettings(updated);
   };
 
+  const handleBackendChange = (backend: LLMBackend) => {
+    const updated = { ...settings, llmBackend: backend };
+    setSettings(updated);
+    saveSettings(updated);
+  };
+
   const handleAIModelChange = (modelId: string) => {
-    const updated = { ...settings, aiModel: modelId };
+    const updated = settings.llmBackend === 'webllm'
+      ? { ...settings, webllmModel: modelId }
+      : { ...settings, wllamaModel: modelId };
+    // Also update legacy aiModel for backward compat
+    updated.aiModel = modelId;
     setSettings(updated);
     saveSettings(updated);
   };
@@ -140,6 +151,76 @@ export default function SettingsPanel() {
         </div>
       </div>
 
+      {/* LLM Backend — only shown when AI mode */}
+      {settings.parserMode === 'ai' && (
+        <div className="rounded-xl bg-card border border-primary/20 p-4">
+          <div className="flex items-start gap-3 mb-3">
+            <Cpu className="w-5 h-5 text-primary mt-0.5 shrink-0" />
+            <div>
+              <h3 className="text-sm font-semibold">LLM Backend</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                WebLLM uses WebGPU for fast GPU inference. wllama runs on CPU via WebAssembly — slower but works everywhere.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <button
+              onClick={() => handleBackendChange('webllm')}
+              className={`flex-1 p-3 rounded-lg border text-left transition-colors ${
+                settings.llmBackend === 'webllm'
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border hover:bg-accent'
+              } ${!hasWebGPU() ? 'opacity-50' : ''}`}
+            >
+              <div className="flex items-center gap-2">
+                <div
+                  className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                    settings.llmBackend === 'webllm'
+                      ? 'border-primary'
+                      : 'border-muted-foreground/30'
+                  }`}
+                >
+                  {settings.llmBackend === 'webllm' && (
+                    <div className="w-2 h-2 rounded-full bg-primary" />
+                  )}
+                </div>
+                <span className="text-sm font-medium">WebLLM (GPU)</span>
+              </div>
+              <p className="text-xs text-muted-foreground mt-1 ml-6">
+                {hasWebGPU() ? 'WebGPU detected — fast GPU inference' : 'WebGPU not available on this device'}
+              </p>
+            </button>
+            <button
+              onClick={() => handleBackendChange('wllama')}
+              className={`flex-1 p-3 rounded-lg border text-left transition-colors ${
+                settings.llmBackend === 'wllama'
+                  ? 'border-primary bg-primary/5'
+                  : 'border-border hover:bg-accent'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <div
+                  className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                    settings.llmBackend === 'wllama'
+                      ? 'border-primary'
+                      : 'border-muted-foreground/30'
+                  }`}
+                >
+                  {settings.llmBackend === 'wllama' && (
+                    <div className="w-2 h-2 rounded-full bg-primary" />
+                  )}
+                </div>
+                <span className="text-sm font-medium">wllama (CPU)</span>
+              </div>
+              <p className="text-xs text-muted-foreground mt-1 ml-6">
+                Works on any device via WebAssembly SIMD
+              </p>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* AI Model Selector — only shown when AI mode */}
       {settings.parserMode === 'ai' && (
         <div className="rounded-xl bg-card border border-primary/20 p-4">
@@ -147,48 +228,93 @@ export default function SettingsPanel() {
             <Layers className="w-5 h-5 text-primary mt-0.5 shrink-0" />
             <div>
               <h3 className="text-sm font-semibold">AI Model</h3>
-              <p className="text-xs text-muted-foreground mt-0.5">
-                Models download once (~{AI_MODEL_CATALOG.find(m => m.id === settings.aiModel)?.sizeMB || '—'} MB) and are cached for future use.
-                All run in-browser via WebAssembly — no GPU, no server.
-              </p>
+              {settings.llmBackend === 'webllm' ? (
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  GPU models via WebLLM. Download once (~{WEBLLM_MODEL_CATALOG.find(m => m.id === settings.webllmModel)?.sizeMB || '—'} MB).
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  CPU models via wllama. Download once (~{AI_MODEL_CATALOG.find(m => m.id === settings.wllamaModel)?.sizeMB || '—'} MB).
+                </p>
+              )}
             </div>
           </div>
 
-          <div className="flex flex-col gap-2">
-            {AI_MODEL_CATALOG.map((model: AICatalogEntry) => (
-              <button
-                key={model.id}
-                onClick={() => handleAIModelChange(model.id)}
-                className={`p-3 rounded-lg border text-left transition-colors ${
-                  settings.aiModel === model.id
-                    ? 'border-primary bg-primary/5'
-                    : 'border-border hover:bg-accent'
-                }`}
-              >
-                <div className="flex items-center gap-2 mb-1">
-                  <div
-                    className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
-                      settings.aiModel === model.id
-                        ? 'border-primary'
-                        : 'border-muted-foreground/30'
-                    }`}
-                  >
-                    {settings.aiModel === model.id && (
-                      <div className="w-2 h-2 rounded-full bg-primary" />
-                    )}
+          {settings.llmBackend === 'webllm' ? (
+            /* WebLLM GPU models */
+            <div className="flex flex-col gap-2">
+              {WEBLLM_MODEL_CATALOG.map((model: WebLLMModelEntry) => (
+                <button
+                  key={model.id}
+                  onClick={() => handleAIModelChange(model.id)}
+                  className={`p-3 rounded-lg border text-left transition-colors ${
+                    settings.webllmModel === model.id
+                      ? 'border-primary bg-primary/5'
+                      : 'border-border hover:bg-accent'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <div
+                      className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                        settings.webllmModel === model.id
+                          ? 'border-primary'
+                          : 'border-muted-foreground/30'
+                      }`}
+                    >
+                      {settings.webllmModel === model.id && (
+                        <div className="w-2 h-2 rounded-full bg-primary" />
+                      )}
+                    </div>
+                    <span className="text-sm font-medium">{model.name}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-secondary text-secondary-foreground font-mono">
+                      {model.architecture}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground ml-auto tabular-nums">
+                      {model.sizeMB} MB
+                    </span>
                   </div>
-                  <span className="text-sm font-medium">{model.name}</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-secondary text-secondary-foreground font-mono">
-                    {model.architecture}
-                  </span>
-                  <span className="text-[10px] text-muted-foreground ml-auto tabular-nums">
-                    {model.sizeMB} MB
-                  </span>
-                </div>
-                <p className="text-xs text-muted-foreground ml-6">{model.description}</p>
-              </button>
-            ))}
-          </div>
+                  <p className="text-xs text-muted-foreground ml-6">{model.description}</p>
+                </button>
+              ))}
+            </div>
+          ) : (
+            /* wllama CPU models */
+            <div className="flex flex-col gap-2">
+              {AI_MODEL_CATALOG.map((model: AICatalogEntry) => (
+                <button
+                  key={model.id}
+                  onClick={() => handleAIModelChange(model.id)}
+                  className={`p-3 rounded-lg border text-left transition-colors ${
+                    settings.wllamaModel === model.id
+                      ? 'border-primary bg-primary/5'
+                      : 'border-border hover:bg-accent'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <div
+                      className={`w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                        settings.wllamaModel === model.id
+                          ? 'border-primary'
+                          : 'border-muted-foreground/30'
+                      }`}
+                    >
+                      {settings.wllamaModel === model.id && (
+                        <div className="w-2 h-2 rounded-full bg-primary" />
+                      )}
+                    </div>
+                    <span className="text-sm font-medium">{model.name}</span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-secondary text-secondary-foreground font-mono">
+                      {model.architecture}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground ml-auto tabular-nums">
+                      {model.sizeMB} MB
+                    </span>
+                  </div>
+                  <p className="text-xs text-muted-foreground ml-6">{model.description}</p>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -246,7 +372,19 @@ export default function SettingsPanel() {
               >
                 wllama
               </a>
-              {' '}— WebAssembly binding for llama.cpp. No GPU, no server.
+              {' '}— WebAssembly binding for llama.cpp.
+            </p>
+            <p className="text-xs text-muted-foreground mt-2">
+              GPU acceleration via{' '}
+              <a
+                href="https://github.com/mlc-ai/web-llm"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary hover:underline"
+              >
+                WebLLM (MLC-AI)
+              </a>
+              {' '}— TVM-compiled models for WebGPU.
             </p>
             <p className="text-xs text-muted-foreground mt-2">
               Database powered by{' '}
