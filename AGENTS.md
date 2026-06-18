@@ -93,7 +93,7 @@ Configurable in Settings tab. Stored in `localStorage`. Changing the model dispo
 Two modes available in Settings:
 
 - **Heuristic**: Regex-based parser. Instant, zero download. Handles common receipt formats (USD, GBP, EUR). Limited accuracy on complex layouts.
-- **AI (LLM)**: In-browser LLM via wllama (WebAssembly binding for llama.cpp). Three models available: Qwen 2.5 0.5B (default, 333MB), SmolLM2 360M (216MB), Llama 3.2 1B (709MB). Models download from HuggingFace Hub and are cached in IndexedDB after first use. **No GPU required** — wllama runs on WebAssembly SIMD everywhere, with optional WebGPU acceleration if available. Falls back to heuristic if model download fails.
+- **AI (LLM)**: In-browser LLM via wllama (WebAssembly binding for llama.cpp). Three models available: Qwen 2.5 0.5B (default, 333MB), SmolLM2 360M (216MB), Llama 3.2 1B (709MB). Models download from HuggingFace Hub and are cached in IndexedDB after first use. **Auto-detects WebGPU** — if `navigator.gpu` is available, all 24 layers offload to GPU for 10-50× faster inference; otherwise runs on WASM SIMD CPU. OCR results are enriched with spatial `[y:N x:N]` position annotations so the LLM can correlate items across receipt columns (left=descriptions, right=amounts). Falls back to heuristic if model download fails.
 
 ---
 

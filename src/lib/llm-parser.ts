@@ -150,7 +150,7 @@ export async function initLLMParser(
         },
         {
           n_threads: 4, // 4 threads — if browser supports SAB, uses real threads
-          n_ctx: 512,
+          n_ctx: 1024, // 1024 ctx for spatial annotations (~600 tok prompt + 200 tok response)
           n_batch: 512,
           n_gpu_layers: gpuLayers,
           flash_attn: true,
