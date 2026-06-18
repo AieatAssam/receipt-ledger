@@ -71,14 +71,22 @@ export function getModelEntry(id: string): AICatalogEntry {
   return AI_MODEL_CATALOG.find(m => m.id === id) || AI_MODEL_CATALOG[0];
 }
 
-// ── Prompt template (spatial + minimal for WASM speed) ───────────
+// ── Prompt template (spatial + dynamic truncation) ───────────────
 
 const SYSTEM_PROMPT = 'Extract receipt JSON from OCR with positions. Each line=[x:N] "text". Left items (x<120)=descriptions, right (x>120)=amounts. Same-line items are related. Return JSON: {merchant, date, total, tax, line_items:[{description,amount,quantity}]}.';
 
+const MAX_TOKENS = 256;       // max tokens for LLM response
+const N_CTX = 2048;           // total context window
+const SYS_TOK_ESTIMATE = 40;  // ~40 tokens for system prompt
+const SAFETY_MARGIN = 24;     // chat template overhead + breathing room
+const AVAILABLE_TOKS = N_CTX - MAX_TOKENS - SYS_TOK_ESTIMATE - SAFETY_MARGIN;
+// Conservative: ~1.5 chars per token for spatial annotations (lots of [y:N x:N])
+const MAX_PROMPT_CHARS = Math.floor(AVAILABLE_TOKS * 1.5);
+
 function buildUserPrompt(rawText: string): string {
-  // Cap at 800 chars to include spatial annotations
-  const capped = rawText.length > 800 ? rawText.slice(0, 800) + '…' : rawText;
-  return capped;
+  if (rawText.length <= MAX_PROMPT_CHARS) return rawText;
+  // Truncate gracefully — keep most text, just trim from the end
+  return rawText.slice(0, MAX_PROMPT_CHARS - 1) + '…';
 }
 
 // ── Wllama singleton ─────────────────────────────────────────────
@@ -150,7 +158,7 @@ export async function initLLMParser(
         },
         {
           n_threads: 4, // 4 threads — if browser supports SAB, uses real threads
-          n_ctx: 1024, // 1024 ctx for spatial annotations (~600 tok prompt + 200 tok response)
+          n_ctx: N_CTX,
           n_batch: 512,
           n_gpu_layers: gpuLayers,
           flash_attn: true,
@@ -260,10 +268,11 @@ export async function parseReceiptWithLLM(
   const { wllama } = wllamaInstance;
 
   const inputText = buildUserPrompt(rawText);
+  const estTokens = Math.round(inputText.length / 1.5);
   onProgress?.({
     status: 'processing',
     progress: 0,
-    text: `Processing ${inputText.length} characters…`,
+    text: `Processing ${inputText.length} chars (~${estTokens} tokens of ${AVAILABLE_TOKS} available)…`,
   });
 
   let fullContent = '';
@@ -271,7 +280,7 @@ export async function parseReceiptWithLLM(
   let firstToken = true;
 
   const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('Inference timed out after 2 minutes. Try a smaller model or shorter receipt.')), INFERENCE_TIMEOUT_MS)
+    setTimeout(() => reject(new Error(`Inference timed out after 3 minutes. Try a smaller model or shorter receipt.`)), INFERENCE_TIMEOUT_MS)
   );
 
   try {
@@ -282,7 +291,7 @@ export async function parseReceiptWithLLM(
           { role: 'user', content: inputText },
         ],
         temperature: 0.1,
-        max_tokens: 256,
+        max_tokens: MAX_TOKENS,
         stream: true,
         onData: (chunk) => {
           const token = chunk.choices?.[0]?.delta?.content || '';
