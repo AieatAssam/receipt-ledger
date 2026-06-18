@@ -71,17 +71,18 @@ export function getModelEntry(id: string): AICatalogEntry {
   return AI_MODEL_CATALOG.find(m => m.id === id) || AI_MODEL_CATALOG[0];
 }
 
-// ── Prompt template (spatial + dynamic truncation) ───────────────
+// ── Prompt template (compact + dynamic truncation) ───────────────
 
-const SYSTEM_PROMPT = 'Extract receipt JSON from OCR with positions. Each line=[x:N] "text". Left items (x<120)=descriptions, right (x>120)=amounts. Same-line items are related. Return JSON: {merchant, date, total, tax, line_items:[{description,amount,quantity}]}.';
+// Pipe-delimited compact format: yN xN text | xN text (no brackets/colons/quotes)
+const SYSTEM_PROMPT = 'OCR receipt. Format: yN xN text | xN text. Left x<120=item, right x>120=price. Same y=related. JSON: {merchant,date,total,tax,line_items:[{description,amount,quantity}]}';
 
-const MAX_TOKENS = 256;       // max tokens for LLM response
-const N_CTX = 2048;           // total context window
-const SYS_TOK_ESTIMATE = 40;  // ~40 tokens for system prompt
-const SAFETY_MARGIN = 24;     // chat template overhead + breathing room
+const MAX_TOKENS = 150;       // max tokens for LLM response (receipt JSON is compact)
+const N_CTX = 1024;           // context window — smaller = faster prompt processing on CPU
+const SYS_TOK_ESTIMATE = 30;  // ~30 tokens for compact system prompt
+const SAFETY_MARGIN = 30;     // chat template + breathing room
 const AVAILABLE_TOKS = N_CTX - MAX_TOKENS - SYS_TOK_ESTIMATE - SAFETY_MARGIN;
-// Conservative: ~1.5 chars per token for spatial annotations (lots of [y:N x:N])
-const MAX_PROMPT_CHARS = Math.floor(AVAILABLE_TOKS * 1.5);
+// Compact format: ~3 chars/token (no brackets/colons/quotes eating tokens)
+const MAX_PROMPT_CHARS = Math.floor(AVAILABLE_TOKS * 3.0);
 
 function buildUserPrompt(rawText: string): string {
   if (rawText.length <= MAX_PROMPT_CHARS) return rawText;
@@ -159,7 +160,7 @@ export async function initLLMParser(
         {
           n_threads: 4, // 4 threads — if browser supports SAB, uses real threads
           n_ctx: N_CTX,
-          n_batch: 512,
+          n_batch: 1024,   // larger batch for faster prompt processing
           n_gpu_layers: gpuLayers,
           flash_attn: true,
           cache_type_k: 'q4_0',  // quantized KV cache saves memory
@@ -268,7 +269,7 @@ export async function parseReceiptWithLLM(
   const { wllama } = wllamaInstance;
 
   const inputText = buildUserPrompt(rawText);
-  const estTokens = Math.round(inputText.length / 1.5);
+  const estTokens = Math.round(inputText.length / 3.0);
   onProgress?.({
     status: 'processing',
     progress: 0,
@@ -280,7 +281,7 @@ export async function parseReceiptWithLLM(
   let firstToken = true;
 
   const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error(`Inference timed out after 3 minutes. Try a smaller model or shorter receipt.`)), INFERENCE_TIMEOUT_MS)
+    setTimeout(() => reject(new Error(`Timed out after 3 min — try shorter receipt or SmolLM2 360M model.`)), INFERENCE_TIMEOUT_MS)
   );
 
   try {
@@ -366,16 +367,16 @@ export function ocrResultToText(result: OcrResult): string {
   }
   if (currentLine.length) lines.push(currentLine);
 
-  // Format: one line per visual row, sort by X within each row
+  // Format: pipe-delimited compact — no brackets/colons/quotes (saves tokens)
   let output = '';
   for (const line of lines) {
     line.sort((a, b) => a.x - b.x);
-    // Include Y position on first item of each line for spatial reference
+    // First item has y position, pipe separates left/right columns
     const parts = line.map((item, i) => {
-      const prefix = i === 0 ? `[y:${Math.round(item.y)} x:${Math.round(item.x)}]` : `[x:${Math.round(item.x)}]`;
-      return `${prefix} "${item.text}"`;
+      const yPart = i === 0 ? `y${Math.round(item.y)} ` : '';
+      return `${yPart}x${Math.round(item.x)} ${item.text}`;
     });
-    output += parts.join('  ') + '\n';
+    output += parts.join(' | ') + '\n';
   }
 
   return output.trim();
