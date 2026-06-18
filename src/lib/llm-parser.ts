@@ -6,7 +6,7 @@ import type { ParsedReceipt, ParsedLineItem } from './parser';
 export type ParserMode = 'heuristic' | 'ai';
 
 export interface LLMProgress {
-  status: 'downloading' | 'loading' | 'ready' | 'error';
+  status: 'downloading' | 'loading' | 'ready' | 'processing' | 'error';
   progress: number; // 0-1
   text: string;
 }
@@ -59,40 +59,14 @@ export function getModelEntry(id: string): AICatalogEntry {
   return AI_MODEL_CATALOG.find(m => m.id === id) || AI_MODEL_CATALOG[0];
 }
 
-// ── Prompt template ──────────────────────────────────────────────
+// ── Prompt template (kept minimal for WASM speed) ────────────────
 
-const SYSTEM_PROMPT = `You are a receipt parser. Your job is to extract structured data from OCR'd receipt text.
-
-Given the raw text from a store receipt, identify:
-- merchant: The store/business name (usually at the top)
-- date: The transaction date in YYYY-MM-DD format
-- total: The final total amount (just the number, no currency symbol)
-- tax: Any tax/VAT amount listed (just the number, or null if not present)
-- line_items: Array of {description, amount, quantity} for each purchased item
-
-Rules:
-- Extract EXACTLY what's on the receipt. Do not invent data.
-- If a field is not found, use null.
-- For line items, amount should be the total for that item (unit price × quantity if shown).
-- quantity is the count/weight, or null if not specified.
-- Ignore boilerplate text (store addresses, phone numbers, thank-you messages, payment instructions).
-- Return ONLY valid JSON, no other text.`;
+const SYSTEM_PROMPT = 'Extract receipt data as JSON. Fields: merchant (string|null), date (YYYY-MM-DD|null), total (number), tax (number|null), line_items (array of {description, amount, quantity}). Return ONLY the JSON object.';
 
 function buildUserPrompt(rawText: string): string {
-  return `Parse this receipt text into JSON:
-
-${rawText}
-
-Return ONLY the JSON object with this exact structure:
-{
-  "merchant": "Store Name or null",
-  "date": "YYYY-MM-DD or null",
-  "total": 12.34,
-  "tax": 1.23,
-  "line_items": [
-    {"description": "Item name", "amount": 5.99, "quantity": 2}
-  ]
-}`;
+  // Cap OCR text to 400 chars — enough for a receipt, keeps prompt processing fast
+  const capped = rawText.length > 400 ? rawText.slice(0, 400) + '…' : rawText;
+  return capped;
 }
 
 // ── Wllama singleton ─────────────────────────────────────────────
@@ -103,10 +77,8 @@ let initError: string | null = null;
 let currentModelId: string | null = null;
 
 async function createWllamaInstance() {
-  // Dynamic import so Vite can code-split wllama
   const { Wllama, LoggerWithoutDebug } = await import('@wllama/wllama');
 
-  // Path to the WASM file (copied to public/ by prebuild script)
   const wllama = new Wllama(
     {
       default: `${import.meta.env.BASE_URL}wllama/wllama.wasm`,
@@ -126,23 +98,19 @@ export async function initLLMParser(
   modelId: string = DEFAULT_MODEL_ID,
   onProgress?: (p: LLMProgress) => void,
 ): Promise<boolean> {
-  // Already initialized with the right model
   if (wllamaInstance && currentModelId === modelId) {
     return true;
   }
 
-  // Different model requested — dispose and re-init
   if (wllamaInstance && currentModelId !== modelId) {
     await disposeLLMParser();
   }
 
-  // Already failed — report the error again
   if (initError) {
     onProgress?.({ status: 'error', progress: 0, text: initError });
     return false;
   }
 
-  // Already initializing
   if (initPromise) {
     return initPromise;
   }
@@ -160,8 +128,7 @@ export async function initLLMParser(
       const { wllama } = await createWllamaInstance();
       wllamaInstance = { Wllama: (await import('@wllama/wllama')).Wllama, wllama };
 
-      // Load model from HuggingFace Hub
-      // Force n_threads=1 for mobile reliability (multi-thread WASM can OOM on phones)
+      // n_ctx=512 keeps memory low; n_threads=1 avoids multi-thread OOM on mobile
       await wllama.loadModelFromHF(
         {
           repo: model.hfRepo,
@@ -169,6 +136,7 @@ export async function initLLMParser(
         },
         {
           n_threads: 1,
+          n_ctx: 512,
           progressCallback: ({ loaded, total }: { loaded: number; total: number }) => {
             const pct = total > 0 ? loaded / total : 0;
             if (pct < 0.99) {
@@ -260,7 +228,7 @@ function parseLLMJson(jsonStr: string, rawText: string): ParsedReceipt {
   }
 }
 
-const INFERENCE_TIMEOUT_MS = 120_000; // 2 minutes max for WASM inference
+const INFERENCE_TIMEOUT_MS = 120_000;
 
 export async function parseReceiptWithLLM(
   rawText: string,
@@ -272,9 +240,16 @@ export async function parseReceiptWithLLM(
 
   const { wllama } = wllamaInstance;
 
-  // Accumulate tokens as they stream in
+  const inputText = buildUserPrompt(rawText);
+  onProgress?.({
+    status: 'processing',
+    progress: 0,
+    text: `Processing ${inputText.length} characters…`,
+  });
+
   let fullContent = '';
   let lastReportTime = Date.now();
+  let firstToken = true;
 
   const timeoutPromise = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error('Inference timed out after 2 minutes. Try a smaller model or shorter receipt.')), INFERENCE_TIMEOUT_MS)
@@ -285,23 +260,28 @@ export async function parseReceiptWithLLM(
       {
         messages: [
           { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: buildUserPrompt(rawText) },
+          { role: 'user', content: inputText },
         ],
-        temperature: 0,
-        max_tokens: 512,
+        temperature: 0.1,
+        max_tokens: 256,
         stream: true,
         onData: (chunk) => {
           const token = chunk.choices?.[0]?.delta?.content || '';
           fullContent += token;
 
-          // Throttle progress updates to every 200ms
+          if (firstToken && token) {
+            firstToken = false;
+          }
+
           const now = Date.now();
           if (now - lastReportTime > 200) {
             lastReportTime = now;
             onProgress?.({
               status: 'loading',
-              progress: Math.min(fullContent.length / 500, 0.95),
-              text: `Generating… ${fullContent.length} chars`,
+              progress: Math.min(fullContent.length / 300, 0.95),
+              text: firstToken
+                ? `Processing prompt…`
+                : `Generating… ${fullContent.length} chars`,
             });
           }
         },
