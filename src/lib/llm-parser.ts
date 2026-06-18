@@ -5,6 +5,18 @@ import type { ParsedReceipt, ParsedLineItem } from './parser';
 
 export type ParserMode = 'heuristic' | 'ai';
 
+// ── WebGPU detection ─────────────────────────────────────────────
+
+function detectWebGPU(): { gpuLayers: number; gpuLabel: string } {
+  try {
+    const hasGPU = typeof navigator !== 'undefined' && 'gpu' in navigator;
+    if (hasGPU) {
+      return { gpuLayers: 99, gpuLabel: 'WebGPU' }; // 99 = all layers
+    }
+  } catch { /* navigator not available */ }
+  return { gpuLayers: 0, gpuLabel: 'CPU (WASM SIMD)' };
+}
+
 export interface LLMProgress {
   status: 'downloading' | 'loading' | 'ready' | 'processing' | 'error';
   progress: number; // 0-1
@@ -59,13 +71,13 @@ export function getModelEntry(id: string): AICatalogEntry {
   return AI_MODEL_CATALOG.find(m => m.id === id) || AI_MODEL_CATALOG[0];
 }
 
-// ── Prompt template (kept minimal for WASM speed) ────────────────
+// ── Prompt template (spatial + minimal for WASM speed) ───────────
 
-const SYSTEM_PROMPT = 'Extract receipt data as JSON. Fields: merchant (string|null), date (YYYY-MM-DD|null), total (number), tax (number|null), line_items (array of {description, amount, quantity}). Return ONLY the JSON object.';
+const SYSTEM_PROMPT = 'Extract receipt JSON from OCR with positions. Each line=[x:N] "text". Left items (x<120)=descriptions, right (x>120)=amounts. Same-line items are related. Return JSON: {merchant, date, total, tax, line_items:[{description,amount,quantity}]}.';
 
 function buildUserPrompt(rawText: string): string {
-  // Cap OCR text to 400 chars — enough for a receipt, keeps prompt processing fast
-  const capped = rawText.length > 400 ? rawText.slice(0, 400) + '…' : rawText;
+  // Cap at 800 chars to include spatial annotations
+  const capped = rawText.length > 800 ? rawText.slice(0, 800) + '…' : rawText;
   return capped;
 }
 
@@ -128,15 +140,22 @@ export async function initLLMParser(
       const { wllama } = await createWllamaInstance();
       wllamaInstance = { Wllama: (await import('@wllama/wllama')).Wllama, wllama };
 
-      // n_ctx=512 keeps memory low; n_threads=1 avoids multi-thread OOM on mobile
+      const { gpuLayers, gpuLabel } = detectWebGPU();
+
+      // n_ctx=512 keeps memory low; GPU offload if WebGPU available
       await wllama.loadModelFromHF(
         {
           repo: model.hfRepo,
           file: model.hfFile,
         },
         {
-          n_threads: 2, // 2 threads balances speed vs mobile memory
+          n_threads: 4, // 4 threads — if browser supports SAB, uses real threads
           n_ctx: 512,
+          n_batch: 512,
+          n_gpu_layers: gpuLayers,
+          flash_attn: true,
+          cache_type_k: 'q4_0',  // quantized KV cache saves memory
+          cache_type_v: 'q4_0',
           progressCallback: ({ loaded, total }: { loaded: number; total: number }) => {
             const pct = total > 0 ? loaded / total : 0;
             if (pct < 0.99) {
@@ -157,7 +176,7 @@ export async function initLLMParser(
       );
 
       currentModelId = modelId;
-      onProgress?.({ status: 'ready', progress: 1, text: `${model.name} ready` });
+      onProgress?.({ status: 'ready', progress: 1, text: `${model.name} ready (${gpuLabel})` });
       return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
@@ -298,23 +317,59 @@ export async function parseReceiptWithLLM(
   return parseLLMJson(json, rawText);
 }
 
-// ── Text extraction from OCR results ─────────────────────────────
+// ── Text extraction from OCR results (with spatial positions) ────
 
 export function ocrResultToText(result: OcrResult): string {
   if (!result.items?.length) return '';
 
-  const sorted = [...result.items].sort((a, b) => {
-    const aY = Math.min(...a.poly.map(p => p[1]));
-    const bY = Math.min(...b.poly.map(p => p[1]));
-    if (Math.abs(aY - bY) < 10) {
-      const aX = Math.min(...a.poly.map(p => p[0]));
-      const bX = Math.min(...b.poly.map(p => p[0]));
-      return aX - bX;
-    }
-    return aY - bY;
+  // Extract bounding box data
+  interface BoxItem {
+    text: string;
+    x: number;
+    y: number;
+    w: number;
+  }
+  const items: BoxItem[] = result.items.map(item => {
+    const xs = item.poly.map(p => p[0]);
+    const ys = item.poly.map(p => p[1]);
+    return {
+      text: item.text,
+      x: Math.min(...xs),
+      y: Math.min(...ys),
+      w: Math.max(...xs) - Math.min(...xs),
+    };
   });
 
-  return sorted.map(item => item.text).join('\n');
+  // Group into visual lines (Y tolerance: 8px)
+  const sorted = [...items].sort((a, b) => a.y - b.y);
+  const lines: BoxItem[][] = [];
+  let currentLine: BoxItem[] = [];
+  let currentY = sorted[0]?.y ?? 0;
+
+  for (const item of sorted) {
+    if (Math.abs(item.y - currentY) > 8) {
+      if (currentLine.length) lines.push(currentLine);
+      currentLine = [item];
+      currentY = item.y;
+    } else {
+      currentLine.push(item);
+    }
+  }
+  if (currentLine.length) lines.push(currentLine);
+
+  // Format: one line per visual row, sort by X within each row
+  let output = '';
+  for (const line of lines) {
+    line.sort((a, b) => a.x - b.x);
+    // Include Y position on first item of each line for spatial reference
+    const parts = line.map((item, i) => {
+      const prefix = i === 0 ? `[y:${Math.round(item.y)} x:${Math.round(item.x)}]` : `[x:${Math.round(item.x)}]`;
+      return `${prefix} "${item.text}"`;
+    });
+    output += parts.join('  ') + '\n';
+  }
+
+  return output.trim();
 }
 
 // ── Dispose ──────────────────────────────────────────────────────
