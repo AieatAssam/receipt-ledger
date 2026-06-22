@@ -25,12 +25,11 @@ export default function App() {
   const [selectedReceipt, setSelectedReceipt] = useState<ReceiptWithItems | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [dbReady, setDbReady] = useState(false);
 
-  // Init DB
+  // Init DB — sets dbReady flag once PGlite is up
   useEffect(() => {
-    db.init().then(() => {
-      loadReceipts();
-    });
+    db.init().then(() => setDbReady(true));
   }, []);
 
   const loadReceipts = useCallback(async () => {
@@ -40,9 +39,10 @@ export default function App() {
     setReceipts(list);
   }, [searchQuery]);
 
+  // Load receipts whenever searchQuery changes (and only after DB is ready)
   useEffect(() => {
-    loadReceipts();
-  }, [loadReceipts]);
+    if (dbReady) loadReceipts();
+  }, [dbReady, loadReceipts]);
 
   const handleCapture = useCallback((image: ImageBitmap) => {
     setCapturedImage(image);
@@ -346,7 +346,7 @@ export default function App() {
 
         {activeTab === 'analytics' && (
           <div className="p-4">
-            <AnalyticsDashboard />
+            <AnalyticsDashboard dbReady={dbReady} />
           </div>
         )}
 

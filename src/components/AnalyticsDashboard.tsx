@@ -1,24 +1,26 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { TrendingUp, ReceiptText, Store, Receipt } from 'lucide-react';
 import { db, type Analytics } from '../lib/db';
 
-export default function AnalyticsDashboard() {
+export default function AnalyticsDashboard({ dbReady }: { dbReady: boolean }) {
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await db.getAnalytics();
-      setAnalytics(data);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
+    if (!dbReady) return;
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      try {
+        const data = await db.getAnalytics();
+        if (!cancelled) setAnalytics(data);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
     load();
-  }, [load]);
+    return () => { cancelled = true; };
+  }, [dbReady]);
 
   if (loading) {
     return (

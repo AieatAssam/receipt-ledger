@@ -191,12 +191,26 @@ export async function initLLMParser(
       const msg = err instanceof Error ? err.message : 'Unknown error';
       if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
         initError = `Failed to download ${model.name}. Check your internet connection.`;
+      } else if (msg.includes('Model file not found')) {
+        // IndexedDB cache evicted/corrupted — clear it so next attempt re-downloads
+        try {
+          const { CacheManager } = await import('@wllama/wllama');
+          const cm = new CacheManager();
+          await cm.clear();
+        } catch { /* ignore cache-clear errors */ }
+        // Don't set initError permanent — let the caller retry
+        onProgress?.({ status: 'error', progress: 0, text: `Cache corrupted. Tap again to re-download ${model.name}.` });
       } else {
         initError = `Failed to load ${model.name}: ${msg}`;
       }
       wllamaInstance = null;
       currentModelId = null;
-      onProgress?.({ status: 'error', progress: 0, text: initError });
+      // Already reported progress in each branch above — this line fires only for
+      // branches that set initError (network / unknown). Cache-corruption branch
+      // reports its own progress and leaves initError null.
+      if (initError) {
+        onProgress?.({ status: 'error', progress: 0, text: initError });
+      }
       return false;
     }
   })();
